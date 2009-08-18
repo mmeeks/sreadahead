@@ -25,9 +25,10 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <sys/mount.h>
+#include <sys/ioctl.h>
 #include <sys/signal.h>
-#include <fcntl.h>
 #include <errno.h>
+#include <linux/fs.h>
 
 #include <getopt.h>
 
@@ -104,6 +105,7 @@ struct ra_struct {
 	struct ra_struct	*next;
 	struct ra_struct	*prev;
 	int			number;
+	unsigned long		block_order_hint;
 };
 
 static struct ra_struct *ra[MAXR];
@@ -384,6 +386,11 @@ static int get_blocks(struct ra_struct *r)
 		rcount++;
 	}
 
+	if (there) {
+		r->block_order_hint = 0; /* first block */
+		ioctl (fd, FIBMAP, &r->block_order_hint);
+	}
+
 	free(mincorebuf);
 	munmap(mmapptr, statbuf.st_size);
 	fclose(file);
@@ -403,10 +410,11 @@ static int get_blocks(struct ra_struct *r)
 				fcount++;
 			}
 			rdsize += (tlen <= 0 ? 1024 : tlen);
-			printf("%s: %d fragment(s), %dkb, %3.1f%%\n",
+			printf("%s: %d fragment(s), %dkb, %3.1f%% - block %ld\n",
 			       r->filename, rcount,
 			       (tlen <= 1024 ? 1024 : tlen) / 1024,
-			       100.0 * there / (there + notthere));
+			       100.0 * there / (there + notthere),
+			       r->block_order_hint);
 		}
 
 		memcpy(r->data, record, sizeof(r->data));
@@ -427,6 +435,50 @@ static void get_ra_blocks(void)
 				r->prev->next = r->next;
 		}
 		r = r->next;
+	}
+}
+
+static void write_ra (FILE *file, struct ra_struct *r)
+{
+	if (debug)
+		printf ("write_ra '%s' (0x%lx)\n", r->filename, r->block_order_hint);
+	fwrite(r->filename, MAXFL, 1, file);
+	fwrite(r->data, sizeof(r->data), 1, file);
+	rdcount++;
+}
+
+/* split the list of files into chunks - runs of 256 files
+   or so. Inside this chunk, sort by block hint - hopefully
+   this substantially improves read linearity on non-SSDs */
+static void write_sorted_in_chunks_by_block(FILE *file, struct ra_struct *list)
+{
+#define CHUNK_SIZE 256 /* deeply mystical chunk size */
+	while (list) {
+		int i, max = 0;
+		int delta = 1;
+		struct ra_struct *sort_array[CHUNK_SIZE];
+
+		/* copy a chunk across */
+		for (; list && max < CHUNK_SIZE; list = list->next)
+			sort_array[max++] = list;
+
+		/* sort by first block */
+		while (delta > 0) {
+			delta = 0;
+			for (i = 0; i < max - 1; i++) {
+				if (sort_array[i]->block_order_hint > sort_array[i+1]->block_order_hint) {
+					struct ra_struct *tmp;
+					tmp = sort_array[i];
+					sort_array[i] = sort_array[i+1];
+					sort_array[i+1] = tmp;
+					delta++;
+				}
+			}
+		}
+
+		/* write out */
+		for (i = 0; i < max - 1; i++)
+			write_ra (file, sort_array[i]);
 	}
 }
 
@@ -610,7 +662,6 @@ static void trace_stop(int signal)
 	remove_dupes();
 	get_ra_blocks();
 
-	/* FIXME: sort by actual position in the filesystem disk for SSDs */
 	/*
 	 * and write out the new pack file
 	 */
@@ -620,13 +671,13 @@ static void trace_stop(int signal)
 		exit(EXIT_FAILURE);
 	}
 
-	r = first_ra;
-	while (r) {
-		fwrite(r->filename, MAXFL, 1, file);
-		fwrite(r->data, sizeof(r->data), 1, file);
-		r = r->next;
-		rdcount++;
+	if (!is_ssd)
+		write_sorted_in_chunks_by_block (file, first_ra);
+	else {
+		for (r = first_ra; r; r = r->next)
+			write_ra (file, r);
 	}
+
 	fclose(file);
 	if (debug) {
 		times(&stop_time);
@@ -701,7 +752,6 @@ int main(int argc, char **argv)
 	is_ssd = is_sda_ssd ();
 	if (!is_ssd)
 		max_time *= 2;
-	fprintf (stderr, "Is ssd !? %d\n", is_ssd);
 
 	file = fopen(PACK_FILE, "r");
 	if (!file) {
@@ -731,23 +781,15 @@ int main(int argc, char **argv)
 	}
 	fclose(file);
 
-	if (is_ssd) {
 #ifdef HAVE_IO_PRIO
 		if (syscall(__NR_ioprio_set, IOPRIO_WHO_PROCESS, pid,
 			    IOPRIO_IDLE_LOWEST) == -1)
 			perror("Can not set IO priority to idle class");
 #endif
 
+	if (is_ssd)
 		readahead_set_len(RA_SMALL);
-		max_threads = 4;
-	} else {
-#ifdef HAVE_IO_PRIO
-		if (syscall(__NR_ioprio_set, IOPRIO_WHO_PROCESS, pid,
-			    IOPRIO_IDLE_LOWEST) == -1)
-			perror("Can not set IO priority to idle class");
-#endif
-		max_threads = MAXTHREADS;
-	}
+	max_threads = 4;
 
 	daemon(0,0);
 
