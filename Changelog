@@ -1,0 +1,13 @@
+1.0 -- Mon 27 Jan 2009  Auke Kok <auke-jan.h.kok@intel.com>
+	* Now use a kernel trace to get list of files opened
+	* Adjusts read_ahead_kb for sata discs to lower values
+	* Order read is obtained from kernel trace
+	* Added sorting routing to filter out duplicate filenames
+	* Merged filelist into single file/binary program
+	* Added default 15 sec timeout for pack generation
+	* Updated README, ChangeLog
+	* No longer restricted to ext3 filesystems
+
+0.04 -- Fri 16 Jan 2009  Auke Kok <auke-jan.h.kok@intel.com>
+	* Moved debugging output of sreadahead-pack to -d
+	* Added a fix to ignore long filenames
