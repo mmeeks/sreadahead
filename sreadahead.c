@@ -169,7 +169,6 @@ static int is_sda_ssd (void)
 
 static void readahead_set_len(int size)
 {
-	int unmount;
 	int i = 0;
 	char ractl[100];
 	/* changes readahead size to "size" for local block devices */
@@ -420,6 +419,7 @@ static int get_blocks(struct ra_struct *r)
 		memcpy(r->data, record, sizeof(r->data));
 		return 1;
 	}
+	return 0;
 }
 
 static void get_ra_blocks(void)
