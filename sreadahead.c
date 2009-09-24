@@ -158,6 +158,34 @@ static void exit_sysfs (void)
 		umount("/sys");
 }
 
+static int debugfs_unmount = 0;
+static void enter_debugfs (void)
+{
+	/*
+	 * by now the init process should have mounted debugfs on a logical
+	 * location like /sys/kernel/debug, but if not then we temporarily
+	 * re-mount it ourselves
+	 */
+	debugfs_unmount = chdir("/sys/kernel/debug/tracing");
+	if (debugfs_unmount != 0) {
+		int ret = mount("debugfs", DEBUGFS_MNT, "debugfs", 0, NULL);
+		if (ret != 0) {
+			perror("Unable to mount debugfs\n");
+			exit(EXIT_FAILURE);
+		}
+		chdir(DEBUGFS_MNT);
+	} else {
+		chdir("..");
+	}
+}
+
+static void exit_debugfs (void)
+{
+	chdir("/");
+	if (debugfs_unmount != 0) {
+		umount(DEBUGFS_MNT);
+	}
+}
 
 static int is_sda_ssd (void)
 {
@@ -565,53 +593,33 @@ static void trace_start(void)
 	readahead_set_len(RA_SMALL);
 }
 
-static void trace_stop(int signal)
+static int trace_terminate = 0;
+static void trace_signal(int signal)
 {
-	int unmount;
-	int ret;
+	trace_terminate = 1;
+}
+
+static void read_trace_pipe(void)
+{
+	int fd;
+	int orig_racount = racount;
 	char buf[4096];
 	char filename[4096];
 	FILE *file;
-	struct ra_struct *r;
-	struct tms start_time;
-	struct tms stop_time;
 
-	if (debug)
-		times(&start_time);
-
-	nice(20);
+	/* It is important that we capture the mincore data
+	   -before- we load more stuff, and push that out of
+	   cache */
+	nice(-10);
 
 	/* return readahead size to normal */
 	readahead_set_len(RA_NORMAL);
+	
+	enter_debugfs();
 
-	/*
-	 * by now the init process should have mounted debugfs on a logical
-	 * location like /sys/kernel/debug, but if not then we temporarily
-	 * re-mount it ourselves
-	 */
-	unmount = chdir("/sys/kernel/debug/tracing");
-	if (unmount != 0) {
-		ret = mount("debugfs", DEBUGFS_MNT, "debugfs", 0, NULL);
-		if (ret != 0) {
-			perror("Unable to mount debugfs\n");
-			exit(EXIT_FAILURE);
-		}
-		chdir(DEBUGFS_MNT);
-	} else {
-		chdir("..");
-	}
-
-	/* stop tracing */
-	file = fopen("tracing/tracing_enabled", "w");
-	if (!file) {
-		perror("Unable to disable tracing\n");
-		/* non-fatal */
-	} else {
-		fprintf(file, "0");
-		fclose(file);
-	}
-
-	file = fopen("tracing/trace", "r");
+	fd = open ("tracing/trace_pipe", O_RDONLY);
+	fcntl (fd, F_SETFL, O_NONBLOCK);
+	file = fdopen(fd, "r");
 	if (!file) {
 		perror("Unable to open trace file\n");
 		exit(EXIT_FAILURE);
@@ -646,6 +654,12 @@ static void trace_stop(int signal)
 			break;
 		}
 
+		/* magic file; open me to abort sreadahead */
+		if (strstr (filename, "sreadahead.complete.token")) {
+			trace_terminate = 1;
+			break;
+		}
+
 		if (strlen(filename) <= MAXFL) {
 			struct ra_struct *tmp;
 			tmp = malloc(sizeof(struct ra_struct));
@@ -670,14 +684,38 @@ static void trace_stop(int signal)
 	fclose(file);
 
 	if (debug)
+		printf ("read %d records\n", racount - orig_racount);
+
+	exit_debugfs();
+}
+
+static void trace_stop(void)
+{
+	FILE *file;
+	struct ra_struct *r;
+	struct tms start_time;
+	struct tms stop_time;
+
+	if (debug) {
+		times(&start_time);
 		printf("Trace contained %d records\n", racount);
+	}
+
+	enter_debugfs();
+
+	/* stop tracing */
+	file = fopen("tracing/tracing_enabled", "w");
+	if (!file) {
+		perror("Unable to disable tracing\n");
+		/* non-fatal */
+	} else {
+		fprintf(file, "0");
+		fclose(file);
+	}
+
+	exit_debugfs();
 
 	first_ra = ra[0];
-
-	chdir("/");
-	if (unmount != 0) {
-		umount(DEBUGFS_MNT);
-	}
 
 	/*
 	 * sort and filter duplicates, and get memory blocks
@@ -784,15 +822,22 @@ int main(int argc, char **argv)
 		trace_start();
 	
 		if (!fork()) {
-			/* child */
-			signal(SIGUSR1, trace_stop);
-			sleep(max_time);
+			int i, max;
+			max = max_time * 2;
+
+			trace_terminate = 0;
+			signal(SIGUSR1, trace_signal);
+
+			for (i = 0; i < max && !trace_terminate; i++) {
+			    usleep (1000000 / 2);
+			    read_trace_pipe ();
+			}
 			/*
 			 * abort if we don't get a signal, so we can stop
 			 * the tracing and minimize the trace buffer size
 			 */
 			signal(SIGUSR1, NULL);
-			trace_stop(0);
+			trace_stop();
 		} else {
 			return EXIT_SUCCESS;
 		}
