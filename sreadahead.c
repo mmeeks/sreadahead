@@ -201,14 +201,25 @@ static void readahead_set_len(int size)
 	exit_sysfs();
 }
 
+static void kmsg_print(const char *msg)
+{
+	int fd = open("/dev/kmsg", O_WRONLY);
+	if (fd > 0) {
+		write (fd, msg, strlen (msg));
+		close (fd);
+	}
+}
+
 static void readahead_one(int index)
 {
 	int fd;
 	int i;
 	char buf[128];
 
-	if (index == CHUNK_SIZE)
-		set_ioprio (IOPRIO_IDLE_LOWEST);	
+	if (index == CHUNK_SIZE) {
+		kmsg_print ("sreadahead hdd - read first chunk\n");
+		set_ioprio (IOPRIO_IDLE_LOWEST);
+	}
 
 	fd = open(rd[index].filename, O_RDONLY|O_NOATIME);
 	if (fd < 0)
@@ -728,6 +739,8 @@ int main(int argc, char **argv)
 	int i, max_threads;
 	pthread_t threads[MAXTHREADS];
 	int max_time = DEFAULT_MAX_TIME;
+
+	kmsg_print ("sreadahead starting\n");
 
 	while (1) {
 		static struct option opts[] = {
