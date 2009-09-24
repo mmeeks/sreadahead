@@ -48,6 +48,7 @@
 #  warning "Architecture does not support ioprio modification"
 #endif
 #define IOPRIO_WHO_PROCESS 1
+#define IOPRIO_WHO_PGRP    2
 #define IOPRIO_CLASS_RT 1
 #define IOPRIO_CLASS_BE 2
 #define IOPRIO_CLASS_IDLE 3
@@ -66,6 +67,8 @@
 #define MAXTHREADS 16   /* max. number of read threads we can use */
 
 #define DEFAULT_MAX_TIME 20 /* should be enough for every OS to boot */
+
+#define CHUNK_SIZE 256 /* deeply mystical I/O grouping chunk size */
 
 /*
  * By default, the kernel reads ahead for 128kb. This throws off our
@@ -121,6 +124,14 @@ static unsigned int cursor = 0;
 
 static int debug = 0;
 static int is_ssd = 0;
+
+static void set_ioprio (int prio)
+{
+#ifdef HAVE_IO_PRIO
+	if (syscall(__NR_ioprio_set, IOPRIO_WHO_PGRP, 0, prio) == -1)
+		perror("Can not set IO priority to idle class");
+#endif
+}
 
 static int sysfs_unmount = 0;
 static void enter_sysfs (void)
@@ -195,6 +206,9 @@ static void readahead_one(int index)
 	int fd;
 	int i;
 	char buf[128];
+
+	if (index == CHUNK_SIZE)
+		set_ioprio (IOPRIO_IDLE_LOWEST);	
 
 	fd = open(rd[index].filename, O_RDONLY|O_NOATIME);
 	if (fd < 0)
@@ -452,7 +466,6 @@ static void write_ra (FILE *file, struct ra_struct *r)
    this substantially improves read linearity on non-SSDs */
 static void write_sorted_in_chunks_by_block(FILE *file, struct ra_struct *list)
 {
-#define CHUNK_SIZE 256 /* deeply mystical chunk size */
 	while (list) {
 		int i, max = 0;
 		int delta = 1;
@@ -713,7 +726,6 @@ int main(int argc, char **argv)
 {
 	FILE *file;
 	int i, max_threads;
-	int pid = 0;
 	pthread_t threads[MAXTHREADS];
 	int max_time = DEFAULT_MAX_TIME;
 
@@ -781,15 +793,15 @@ int main(int argc, char **argv)
 	}
 	fclose(file);
 
-#ifdef HAVE_IO_PRIO
-		if (syscall(__NR_ioprio_set, IOPRIO_WHO_PROCESS, pid,
-			    IOPRIO_IDLE_LOWEST) == -1)
-			perror("Can not set IO priority to idle class");
-#endif
 
-	if (is_ssd)
+	if (is_ssd) {
+		set_ioprio (IOPRIO_IDLE_LOWEST);	
 		readahead_set_len(RA_SMALL);
-	max_threads = 4;
+		max_threads = 4;
+	} else {
+		set_ioprio (IOPRIO_RT_HIGHEST); /* will lower later */
+		max_threads = 1;
+	}
 
 	daemon(0,0);
 
