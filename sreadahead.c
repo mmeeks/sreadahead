@@ -534,6 +534,18 @@ static void write_sorted_in_chunks_by_block(FILE *file, struct ra_struct *list)
 	}
 }
 
+static void trace_fprintf (const char *fname, const char *value)
+{
+	FILE *file = fopen (fname, "w");
+	if (!file) {
+		fprintf (stderr, "Unable to open %s: %s\n",
+			 fname, strerror (errno));
+		exit(EXIT_FAILURE);
+	}
+	fputs (value, file);
+	fclose(file);
+}
+
 static void trace_start(void)
 {
 	int ret;
@@ -553,29 +565,10 @@ static void trace_start(void)
 
 	chdir(DEBUGFS_MNT);
 
-	file = fopen("tracing/current_tracer", "w");
-	if (!file) {
-		perror("Unable to select tracer\n");
-		exit(EXIT_FAILURE);
-	}
-	fprintf(file, "open");
-	fclose(file);
-
-	file = fopen("tracing/current_tracer", "r");
-	fgets(buf, 4096, file);
-	fclose(file);
-	if (strcmp(buf, "open\n") != 0) {
-		perror("Unable to select open tracer\n");
-		exit(EXIT_FAILURE);
-	}
-
-	file = fopen("tracing/tracing_enabled", "w");
-	if (!file) {
-		perror("Unable to enable tracing\n");
-		exit(EXIT_FAILURE);
-	}
-	fprintf(file, "1");
-	fclose(file);
+	trace_fprintf ("tracing/events/fs/uselib/enable", "1");
+	trace_fprintf ("tracing/events/fs/open_exec/enable", "1");
+	trace_fprintf ("tracing/events/fs/do_sys_open/enable", "1");
+	trace_fprintf ("tracing/tracing_enabled", "1");
 
 	file = fopen("tracing/tracing_enabled", "r");
 	fgets(buf, 4096, file);
@@ -606,11 +599,6 @@ static void read_trace_pipe(void)
 	char buf[4096];
 	char filename[4096];
 	FILE *file;
-
-	/* It is important that we capture the mincore data
-	   -before- we load more stuff, and push that out of
-	   cache */
-	nice(-10);
 
 	/* return readahead size to normal */
 	readahead_set_len(RA_NORMAL);
@@ -647,6 +635,8 @@ static void read_trace_pipe(void)
 		if (strncmp(filename, "/sys/", 5) == 0)
 			continue;
 		if (strncmp(filename, "/proc/", 6) == 0)
+			continue;
+		if (strncmp(filename, "/tmp/bootchart", 14) == 0)
 			continue;
 
 		if (racount >= MAXR) {
@@ -704,14 +694,10 @@ static void trace_stop(void)
 	enter_debugfs();
 
 	/* stop tracing */
-	file = fopen("tracing/tracing_enabled", "w");
-	if (!file) {
-		perror("Unable to disable tracing\n");
-		/* non-fatal */
-	} else {
-		fprintf(file, "0");
-		fclose(file);
-	}
+	trace_fprintf ("tracing/tracing_enabled", "0");
+	trace_fprintf ("tracing/events/fs/do_sys_open/enable", "0");
+	trace_fprintf ("tracing/events/fs/open_exec/enable", "0");
+	trace_fprintf ("tracing/events/fs/uselib/enable", "0");
 
 	exit_debugfs();
 
@@ -827,6 +813,12 @@ int main(int argc, char **argv)
 
 			trace_terminate = 0;
 			signal(SIGUSR1, trace_signal);
+
+
+			/* It is important that we capture the mincore data
+			   -before- we load more stuff, and push that out of
+			   cache */
+			nice(-10);
 
 			for (i = 0; i < max && !trace_terminate; i++) {
 			    usleep (1000000 / 2);
