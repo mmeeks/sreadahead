@@ -1,0 +1,35 @@
+.TH sreadahead 8 "2009-02-07" "" ""
+.SH NAME
+sreadahead \- a readahead implementation optimized for solid state devices
+.SH SYNOPSIS
+.B sreadahead
+[OPTION]...
+.SH DESCRIPTION
+.B sreadahead
+is a daemon that reads data sequential by use from disk. Sreadahead does this by
+retrieving the read order (in timestamp format) from an actual boot sequence and
+storing a list of data that was read during that boot sequence in a flat
+database. On the next boot this file can be used to load all the data described
+in the database into memory and in order of use.
+.SH OPTIONS
+.TP
+.B \-t\fR \fIN\fR, \fB\-\-time\fR=\fIN
+make sreadahead stop after N seconds instead of the default 15 seconds
+.TP
+.B \-d\fR, \fB\-\-debug
+print debug output to stdout
+.TP
+.B \-h\fR, \fB\-\-help
+show a help message and exit
+.TP
+.B \-v\fR, \fB\-\-version
+show version information and exit
+.SH AUTHOR
+.PP
+sreadahead is written by the Intel Corporation. This manual page was written by
+Tobias Klauser <tklauser@distanz.ch> for the Debian system (but may be used by
+others).
+.SH SEE ALSO
+.PP
+.BR readahead(2),
+.BR readahead-list(8)
