@@ -8,6 +8,18 @@
  * as published by the Free Software Foundation; version 2
  * of the License.
  */
+
+/*
+ * TODO: 
+ *	set CPU priority at maximum [!]
+ *	do the mincore earlier ?
+ *	print out files with no touched pages / special-case them ?
+ *	delay a loop and run the mincore later ? ...
+ *
+ *	merge contiguous future stuff into the 1st 256 chunk ?
+ *	so we don't suffer ? ...
+ */
+
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -122,6 +134,7 @@ static int rdsize = 0;
 static unsigned int total_files = 0;
 static unsigned int cursor = 0;
 
+static int dump = 0;
 static int debug = 0;
 static int is_ssd = 0;
 
@@ -278,6 +291,87 @@ static void *one_thread(void *ptr)
 			break;
 	}
 	return NULL;
+}
+
+static int dump_files(void)
+{
+	unsigned int i;
+	FILE *out = stdout;
+
+	for (i = 0; i < total_files; i++) {
+		int page_size = 4096;
+		struct stat statbuf;
+		size_t num_pages;
+		size_t block_count, j;
+		off_t block_bytes;
+		char *buf = NULL;
+		char *ptr;
+
+		if (i == CHUNK_SIZE)
+			fprintf (out, "First chunk boundary !\n");
+
+		if (stat (rd[i].filename, &statbuf) < 0) {
+			fprintf (out, "%s: %s\n", rd[i].filename, strerror (errno));
+			continue;
+		}
+
+		fprintf (out, "%s\n", rd[i].filename);
+
+		num_pages = (statbuf.st_size
+			     ? (statbuf.st_size - 1) / page_size + 1
+			     : 0);
+
+		buf = malloc (num_pages + 1);
+		memset (buf, '.', num_pages);
+		buf[num_pages] = '\0';
+
+		block_count = 0;
+		block_bytes = 0;
+
+		for (j = 0; j < MAXRECS; j++) {
+		  size_t blk;
+		  size_t k;
+
+			if (!rd[i].data[j].len)
+				continue;
+			blk = rd[i].data[j].offset / page_size;
+
+			if (blk < num_pages)
+				buf[blk] = '@';
+
+			for (k = blk + 1;
+			     ((k < (blk + (rd[i].data[j].len + page_size - 1) / page_size))
+			      && (k < num_pages));
+			     k++)
+				buf[k] = '#';
+
+			block_count++;
+			block_bytes += rd[i].data[j].len;
+		}
+
+		fprintf (out, "%s (%zu kB), %zu blocks (%zu kB)\n",
+			 rd[i].filename, (size_t)(statbuf.st_size + 1023) / 1024,
+			 block_count, (size_t)(block_bytes + 1023) / 1024);
+
+		ptr = buf;
+		while (strlen (ptr) > 74) {
+			fprintf (out, "  [%.74s]\n", ptr);
+			ptr += 74;
+		}
+
+		if (strlen (ptr))
+			fprintf (out, "  [%-74s]\n", ptr);
+
+		for (j = 0; j < MAXRECS; j++) {
+			if (!rd[i].data[j].len)
+				continue;
+
+			fprintf (out, "\t%zu, %zu bytes\n",
+				 (size_t)rd[i].data[j].offset,
+				 (size_t)rd[i].data[j].len);
+		}
+	}
+	return EXIT_SUCCESS;
 }
 
 /* sort to help remove duplicates, we retain the original
@@ -450,8 +544,10 @@ static int get_blocks(struct ra_struct *r)
 	rcount = reduce_blocks(record, rcount, MAXRECS);
 	if (rcount > 0) {
 		/* some empty files slip through */
-		if (record[0].len == 0)
+	  if (record[0].len == 0) {
+			fprintf (stderr, "removing head '%s' size %ld", r->filename, statbuf.st_size);
 			return 0;
+	  }
 
 		if (debug) {
 			int tlen = 0;
@@ -472,6 +568,8 @@ static int get_blocks(struct ra_struct *r)
 		memcpy(r->data, record, sizeof(r->data));
 		return 1;
 	}
+
+	fprintf (stderr, "removing tail '%s' size %ld", r->filename, statbuf.st_size);
 	return 0;
 }
 
@@ -745,6 +843,7 @@ static void print_usage(const char *name)
 	printf("  -t N, --time=N        Wait for N seconds before creating new\n");
 	printf("                        pack file (default %d)\n", DEFAULT_MAX_TIME);
 	printf("  -d,   --debug         Print debug output to stdout\n");
+	printf("  -x,   --dump          Dump the pack to stdout\n");
 	printf("  -h,   --help          Show this help message\n");
 	printf("  -v,   --version       Show version information and exit\n");
 	exit(EXIT_SUCCESS);
@@ -768,6 +867,7 @@ int main(int argc, char **argv)
 
 	while (1) {
 		static struct option opts[] = {
+			{ "dump", 0, NULL, 'x' },
 			{ "debug", 0, NULL, 'd' },
 			{ "help", 0, NULL, 'h' },
 			{ "version", 0, NULL, 'v' },
@@ -793,6 +893,9 @@ int main(int argc, char **argv)
 		case 't':
 			max_time = atoi(optarg);
 			break;
+		case 'x':
+			dump = 1;
+			break;
 		default:
 			;
 		}
@@ -813,12 +916,6 @@ int main(int argc, char **argv)
 
 			trace_terminate = 0;
 			signal(SIGUSR1, trace_signal);
-
-
-			/* It is important that we capture the mincore data
-			   -before- we load more stuff, and push that out of
-			   cache */
-			nice(-10);
 
 			for (i = 0; i < max && !trace_terminate; i++) {
 			    usleep (1000000 / 2);
@@ -842,7 +939,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	fclose(file);
-
+	if (dump)
+		return dump_files ();
 
 	if (is_ssd) {
 		set_ioprio (IOPRIO_IDLE_LOWEST);	
@@ -854,6 +952,11 @@ int main(int argc, char **argv)
 	}
 
 	daemon(0,0);
+
+	/* it is important that we get our I/O requests in first,
+	 * and our mincore's done before the page-cache gets
+	 * trampled on during instrumenting */
+	nice(-10);
 
 	for (i = 0; i < max_threads; i++)
 		pthread_create(&threads[i], NULL, one_thread, NULL);
