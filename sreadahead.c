@@ -18,6 +18,8 @@
  *
  *	merge contiguous future stuff into the 1st 256 chunk ?
  *	so we don't suffer ? ...
+ *
+ *      add breakdown of I/O by paths ... (?)
  */
 
 #define _GNU_SOURCE
@@ -258,7 +260,7 @@ static void readahead_one(int index)
 	char buf[128];
 
 	if (index == CHUNK_SIZE) {
-		kmsg_print ("sreadahead hdd - read first chunk\n");
+		kmsg_print ("sreadahead hdd - have read first chunk(s)\n");
 		set_ioprio (IOPRIO_IDLE_LOWEST);
 	}
 
@@ -307,8 +309,8 @@ static int dump_files(void)
 		char *buf = NULL;
 		char *ptr;
 
-		if (i == CHUNK_SIZE)
-			fprintf (out, "First chunk boundary !\n");
+		if (!(i % CHUNK_SIZE))
+			fprintf (out, "%d chunk boundary.\n", i / CHUNK_SIZE);
 
 		if (stat (rd[i].filename, &statbuf) < 0) {
 			fprintf (out, "%s: %s\n", rd[i].filename, strerror (errno));
@@ -360,7 +362,7 @@ static int dump_files(void)
 		}
 
 		if (strlen (ptr))
-			fprintf (out, "  [%-74s]\n", ptr);
+			fprintf (out, "  [%s]\n", ptr);
 
 		for (j = 0; j < MAXRECS; j++) {
 			if (!rd[i].data[j].len)
@@ -544,10 +546,12 @@ static int get_blocks(struct ra_struct *r)
 	rcount = reduce_blocks(record, rcount, MAXRECS);
 	if (rcount > 0) {
 		/* some empty files slip through */
-	  if (record[0].len == 0) {
-			fprintf (stderr, "removing head '%s' size %ld", r->filename, statbuf.st_size);
+		if (record[0].len == 0) {
+			if (debug)
+				printf ("removing head '%s' size %ld\n",
+					r->filename, statbuf.st_size);
 			return 0;
-	  }
+		}
 
 		if (debug) {
 			int tlen = 0;
@@ -568,8 +572,15 @@ static int get_blocks(struct ra_struct *r)
 		memcpy(r->data, record, sizeof(r->data));
 		return 1;
 	}
-
-	fprintf (stderr, "removing tail '%s' size %ld", r->filename, statbuf.st_size);
+	/* allow small files - dropped by the page cache through anyway */
+	else if (statbuf.st_size < 4096*2) {
+		r->data[0].offset = 0;
+		r->data[0].len = (uint32_t) statbuf.st_size;
+		return 1;
+	}
+	if (debug)
+		printf ("removing tail '%s' size %ld\n",
+			r->filename, statbuf.st_size);
 	return 0;
 }
 
@@ -690,6 +701,20 @@ static void trace_signal(int signal)
 	trace_terminate = 1;
 }
 
+static int dumb_hash_contains (const char *filename)
+{
+	static const char *hash_table[2039] = { 0, };
+	const signed char *p = filename;
+	uint32_t h = *p;
+	for (p += 1; *p != '\0'; p++)
+		h = (h << 5) - h + *p;
+	h %= 2039;
+	if (hash_table[h])
+		return !strcmp (hash_table[h], filename);
+	hash_table[h] = filename;
+	return 0;
+}
+
 static void read_trace_pipe(void)
 {
 	int fd;
@@ -761,6 +786,14 @@ static void read_trace_pipe(void)
 			ra[racount] = tmp;
 
 			strcpy(ra[racount]->filename, filename);
+
+			/* save hammering the lamers bubble-sort with duplicates */
+			if (dumb_hash_contains (ra[racount]->filename)) {
+				free (ra[racount]);
+				ra[racount] = NULL;
+				continue;
+			}
+
 			if (racount > 0) {
 				ra[racount]->prev = ra[racount - 1];
 				ra[racount - 1]->next = ra[racount];
