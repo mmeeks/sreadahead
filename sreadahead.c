@@ -1,5 +1,7 @@
 /*
  * (C) Copyright 2008 Intel Corporation
+ * (C) Copyright 2009 Canonical Ltd.
+ * (C) Copyright 2010 Novell, Inc.
  *
  * Author: Arjan van de Ven <arjan@linux.intel.com>
  *
@@ -295,6 +297,53 @@ static void *one_thread(void *ptr)
 	return NULL;
 }
 
+typedef struct {
+	char     name[MAXFL];
+	size_t   size;
+} SizeEnt;
+
+static SizeEnt *sizes[MAXR + 1024];
+static int sizes_count = 0;
+
+static int size_compare (const void *a, const void *b)
+{
+	return (*(SizeEnt **)a)->size - (*(SizeEnt **)b)->size;
+}
+
+static void add_one_size (const char *name, size_t size)
+{
+	int i;
+	SizeEnt *n;
+
+	/* do we have an existing entry to accumulate into */
+	for (i = 0; i < sizes_count; i++) {
+		if (!strcmp (name, sizes[i]->name)) {
+			sizes[i]->size += size;
+			return;
+		}
+	}
+	
+	/* so create one */
+	n = calloc (1, sizeof (SizeEnt));
+	strcpy (n->name, name);
+	n->size = size;
+	sizes[sizes_count++] = n;
+}
+
+static void add_size (const char *name, size_t size)
+{
+	char tmpl[MAXFL], *p;
+
+	strcpy (tmpl, name);
+	add_one_size (tmpl, size);
+
+	/* now break down into path elements */
+	while (p = strrchr (tmpl, '/')) {
+		*p = '\0';
+		add_one_size (tmpl, size);
+	}
+}
+
 static int dump_files(void)
 {
 	unsigned int i;
@@ -351,6 +400,7 @@ static int dump_files(void)
 			block_bytes += rd[i].data[j].len;
 		}
 
+		add_size (rd[i].filename, block_bytes);
 		fprintf (out, "%s (%zu kB), %zu blocks (%zu kB)\n",
 			 rd[i].filename, (size_t)(statbuf.st_size + 1023) / 1024,
 			 block_count, (size_t)(block_bytes + 1023) / 1024);
@@ -372,6 +422,17 @@ static int dump_files(void)
 				 (size_t)rd[i].data[j].offset,
 				 (size_t)rd[i].data[j].len);
 		}
+	}
+
+	qsort (sizes, sizes_count, sizeof (SizeEnt *), size_compare);
+	fprintf (out, "\n\n---\n\nsize breakdown by path:\n");
+	fprintf (out, "\tname\tsize(k)\n");
+	{
+		int i;
+		for (i = 0; i < sizes_count; i++)
+			fprintf (out, "\t%s\t%ld\n",
+				 sizes[i]->name[0] == '\0' ? "Total" : sizes[i]->name,
+				 (long)(sizes[i]->size + 1023) / 1024);
 	}
 	return EXIT_SUCCESS;
 }
