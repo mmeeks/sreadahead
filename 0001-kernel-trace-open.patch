@@ -15,26 +15,27 @@ Signed-off-by: Michael Meeks <michael.meeks@novell.com>
 Signed-off-by: Greg Kroah-Hartman <gregkh@suse.de>
 
 ---
- fs/exec.c                    |    6 +++
- fs/open.c                    |    4 ++
- include/linux/ftrace_event.h |    4 ++
- include/trace/events/fs.h    |   66 +++++++++++++++++++++++++++++++++++++++++++
- include/trace/ftrace.h       |   28 ++++++++++++++++++
- kernel/trace/trace_events.c  |   34 ++++++++++++++++++++++
- 6 files changed, 142 insertions(+)
+ fs/exec.c                    |    6 ++++++
+ fs/open.c                    |    4 ++++
+ include/linux/ftrace_event.h |    4 ++++
+ include/trace/ftrace.h       |   28 ++++++++++++++++++++++++++++
+ kernel/trace/trace_events.c  |   32 ++++++++++++++++++++++++++++++++
+ 5 files changed, 74 insertions(+), 0 deletions(-)
 
+diff --git a/fs/exec.c b/fs/exec.c
+index 077a075..757262a 100644
 --- a/fs/exec.c
 +++ b/fs/exec.c
-@@ -56,6 +56,8 @@
- #include <linux/fsnotify.h>
- #include <linux/fs_struct.h>
+@@ -58,6 +58,8 @@
+ #include <linux/pipe_fs_i.h>
+ #include <trace/fs.h>
  
 +#include <trace/events/fs.h>
 +
  #include <asm/uaccess.h>
  #include <asm/mmu_context.h>
  #include <asm/tlb.h>
-@@ -130,6 +132,8 @@ SYSCALL_DEFINE1(uselib, const char __use
+@@ -138,6 +140,8 @@ SYSCALL_DEFINE1(uselib, const char __user *, library)
  
  	fsnotify_open(file->f_path.dentry);
  
@@ -43,20 +44,22 @@ Signed-off-by: Greg Kroah-Hartman <gregkh@suse.de>
  	error = -ENOEXEC;
  	if(file->f_op) {
  		struct linux_binfmt * fmt;
-@@ -665,6 +669,8 @@ struct file *open_exec(const char *name)
+@@ -671,6 +675,8 @@ struct file *open_exec(const char *name)
  
  	fsnotify_open(file->f_path.dentry);
  
 +	trace_open_exec(file);
 +
- 	err = deny_write_access(file);
- 	if (err)
- 		goto exit;
+ 	if (file->f_op && file->f_op->open_exec) {
+ 		err = file->f_op->open_exec(file->f_path.dentry->d_inode);
+ 		if (err)
+diff --git a/fs/open.c b/fs/open.c
+index 2d5b513..d6065eb 100644
 --- a/fs/open.c
 +++ b/fs/open.c
-@@ -31,6 +31,9 @@
- #include <linux/falloc.h>
- #include <linux/fs_struct.h>
+@@ -35,6 +35,9 @@
+ DEFINE_TRACE(fs_open);
+ DEFINE_TRACE(fs_close);
  
 +#define CREATE_TRACE_POINTS
 +#include <trace/events/fs.h>
@@ -64,25 +67,153 @@ Signed-off-by: Greg Kroah-Hartman <gregkh@suse.de>
  int vfs_statfs(struct dentry *dentry, struct kstatfs *buf)
  {
  	int retval = -ENODEV;
-@@ -1040,6 +1043,7 @@ long do_sys_open(int dfd, const char __u
+@@ -1047,6 +1050,7 @@ long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
  			} else {
  				fsnotify_open(f->f_path.dentry);
  				fd_install(fd, f);
 +				trace_do_sys_open(f, flags, mode);
  			}
+ 			trace_fs_open(fd, tmp);
  		}
- 		putname(tmp);
+diff --git a/include/linux/ftrace_event.h b/include/linux/ftrace_event.h
+index 4ec5e67..a620bb9 100644
 --- a/include/linux/ftrace_event.h
 +++ b/include/linux/ftrace_event.h
-@@ -169,4 +169,8 @@ do {									\
- 	if (ret)							\
- 		return ret;
+@@ -167,6 +167,10 @@ extern int trace_define_common_fields(struct ftrace_event_call *call);
+ 
+ int trace_set_clr_event(const char *system, const char *event, int set);
  
 +/* file pointer helpers */
 +extern int  ftrace_file_name_len (const struct file *f);
 +extern void ftrace_assign_file   (char *dest, int dest_len, const struct file *f);
 +
- #endif /* _LINUX_FTRACE_EVENT_H */
+ /*
+  * The double __builtin_constant_p is because gcc will give us an error
+  * if we try to allocate the static variable to fmt if it is not a
+diff --git a/include/trace/ftrace.h b/include/trace/ftrace.h
+index dacb8ef..914561e 100644
+--- a/include/trace/ftrace.h
++++ b/include/trace/ftrace.h
+@@ -33,6 +33,9 @@
+ #undef __string
+ #define __string(item, src) __dynamic_array(char, item, -1)
+ 
++#undef __file_p
++#define __file_p(item, src) __dynamic_array(char, item, -1)
++
+ #undef TP_STRUCT__entry
+ #define TP_STRUCT__entry(args...) args
+ 
+@@ -89,6 +92,10 @@
+ #undef __string
+ #define __string(item, src) __dynamic_array(char, item, -1)
+ 
++#undef __file_p
++#define __file_p(item, src)			int item; \
++						int item##__size;
++
+ #undef TRACE_EVENT
+ #define TRACE_EVENT(call, proto, args, tstruct, assign, print)		\
+ 	struct ftrace_data_offsets_##call {				\
+@@ -151,6 +158,9 @@
+ #undef __string
+ #define __string(item, src) __dynamic_array(char, item, -1)
+ 
++#undef __file_p
++#define __file_p(item, src) __dynamic_array(char, item, -1)
++
+ #undef __entry
+ #define __entry REC
+ 
+@@ -315,6 +325,9 @@ ftrace_raw_output_##call(struct trace_iterator *iter, int flags)	\
+ #undef __string
+ #define __string(item, src) __dynamic_array(char, item, -1)
+ 
++#undef __file_p
++#define __file_p(item, src) __dynamic_array(char, item, -1)
++
+ #undef TRACE_EVENT
+ #define TRACE_EVENT(call, proto, args, tstruct, func, print)		\
+ static int								\
+@@ -360,6 +373,14 @@ ftrace_define_fields_##call(struct ftrace_event_call *event_call)	\
+ #undef __string
+ #define __string(item, src) __dynamic_array(char, item, strlen(src) + 1)       \
+ 
++#undef __file_p
++#define __file_p(item, src)						\
++	__data_offsets->item = __data_size +				\
++			       offsetof(typeof(*entry), __data);	\
++	__data_offsets->item##__size = ftrace_file_name_len(src);	\
++	__data_size += __data_offsets->item##__size;
++
++
+ #undef TRACE_EVENT
+ #define TRACE_EVENT(call, proto, args, tstruct, assign, print)		\
+ static inline int ftrace_get_offsets_##call(				\
+@@ -543,10 +564,17 @@ static void ftrace_profile_disable_##call(void)				\
+ #undef __string
+ #define __string(item, src) __dynamic_array(char, item, -1)       	\
+ 
++#undef __file_p
++#define __file_p(item, src) __dynamic_array(char, item, -1)       	\
++
+ #undef __assign_str
+ #define __assign_str(dst, src)						\
+ 	strcpy(__get_str(dst), src);
+ 
++#undef __assign_file_p
++#define __assign_file_p(dst, src)					\
++	ftrace_assign_file(__get_str (dst), __data_offsets.dst##__size, src);
++
+ #undef TRACE_EVENT
+ #define TRACE_EVENT(call, proto, args, tstruct, assign, print)		\
+ 									\
+diff --git a/kernel/trace/trace_events.c b/kernel/trace/trace_events.c
+index d128f65..a733c58 100644
+--- a/kernel/trace/trace_events.c
++++ b/kernel/trace/trace_events.c
+@@ -93,6 +93,38 @@ int trace_define_common_fields(struct ftrace_event_call *call)
+ }
+ EXPORT_SYMBOL_GPL(trace_define_common_fields);
+ 
++/* file pointer helpers */
++int ftrace_file_name_len (const struct file *f)
++{
++	/* This performs pretty terribly - obviously */
++	int len = 1;
++	char *buf, *fname;
++
++	if (!(buf = kzalloc(PAGE_SIZE, GFP_KERNEL)))
++		return len;
++	fname = d_path(&f->f_path, buf, PAGE_SIZE);
++	if (!IS_ERR (fname))
++		len += strlen (fname);
++	kfree(buf);
++	return len;
++}
++
++void ftrace_assign_file (char *dest, int dest_len, const struct file *f)
++{
++	char *buf, *fname;
++
++	dest[0] = '\0';
++	if (!(buf = kzalloc(PAGE_SIZE, GFP_KERNEL)))
++		return;
++
++	/* it would be nicer to write this directly into the
++	 * allocated buffer, but d_path doesn't like that */
++	fname = d_path(&f->f_path, buf, PAGE_SIZE);
++	if (!IS_ERR (fname))
++		strncpy (dest, fname, dest_len);
++	kfree(buf);
++}
++
+ #ifdef CONFIG_MODULES
+ 
+ static void trace_destroy_fields(struct ftrace_event_call *call)
+diff --git a/dev/null b/include/trace/events/fs.h
+new file mode 100644
+index 0000000..b1aa653
 --- /dev/null
 +++ b/include/trace/events/fs.h
 @@ -0,0 +1,66 @@
@@ -152,122 +283,3 @@ Signed-off-by: Greg Kroah-Hartman <gregkh@suse.de>
 +
 +/* This part must be outside protection */
 +#include <trace/define_trace.h>
---- a/include/trace/ftrace.h
-+++ b/include/trace/ftrace.h
-@@ -30,6 +30,9 @@
- #undef __string
- #define __string(item, src) __dynamic_array(char, item, -1)
- 
-+#undef __file_p
-+#define __file_p(item, src) __dynamic_array(char, item, -1)
-+
- #undef TP_STRUCT__entry
- #define TP_STRUCT__entry(args...) args
- 
-@@ -72,6 +75,10 @@
- #undef __string
- #define __string(item, src) __dynamic_array(char, item, -1)
- 
-+#undef __file_p
-+#define __file_p(item, src)			int item; \
-+						int item##__size;
-+
- #undef TRACE_EVENT
- #define TRACE_EVENT(call, proto, args, tstruct, assign, print)		\
- 	struct ftrace_data_offsets_##call {				\
-@@ -131,6 +138,9 @@
- #undef __string
- #define __string(item, src) __dynamic_array(char, item, -1)
- 
-+#undef __file_p
-+#define __file_p(item, src) __dynamic_array(char, item, -1)
-+
- #undef __entry
- #define __entry REC
- 
-@@ -289,6 +299,9 @@ ftrace_raw_output_##call(struct trace_it
- #undef __string
- #define __string(item, src) __dynamic_array(char, item, -1)
- 
-+#undef __file_p
-+#define __file_p(item, src) __dynamic_array(char, item, -1)
-+
- #undef TRACE_EVENT
- #define TRACE_EVENT(call, proto, args, tstruct, func, print)		\
- int									\
-@@ -333,6 +346,14 @@ ftrace_define_fields_##call(void)					\
- #undef __string
- #define __string(item, src) __dynamic_array(char, item, strlen(src) + 1)       \
- 
-+#undef __file_p
-+#define __file_p(item, src)						\
-+	__data_offsets->item = __data_size +				\
-+			       offsetof(typeof(*entry), __data);	\
-+	__data_offsets->item##__size = ftrace_file_name_len(src);	\
-+	__data_size += __data_offsets->item##__size;
-+
-+
- #undef TRACE_EVENT
- #define TRACE_EVENT(call, proto, args, tstruct, assign, print)		\
- static inline int ftrace_get_offsets_##call(				\
-@@ -526,10 +547,17 @@ static void ftrace_profile_disable_##cal
- #undef __string
- #define __string(item, src) __dynamic_array(char, item, -1)       	\
- 
-+#undef __file_p
-+#define __file_p(item, src) __dynamic_array(char, item, -1)       	\
-+
- #undef __assign_str
- #define __assign_str(dst, src)						\
- 	strcpy(__get_str(dst), src);
- 
-+#undef __assign_file_p
-+#define __assign_file_p(dst, src)					\
-+	ftrace_assign_file(__get_str (dst), __data_offsets.dst##__size, src);
-+
- #undef TRACE_EVENT
- #define TRACE_EVENT(call, proto, args, tstruct, assign, print)		\
- 									\
---- a/kernel/trace/trace_events.c
-+++ b/kernel/trace/trace_events.c
-@@ -60,6 +60,40 @@ err:
- }
- EXPORT_SYMBOL_GPL(trace_define_field);
- 
-+/* file pointer helpers */
-+int ftrace_file_name_len (const struct file *f)
-+{
-+	/* This performs pretty terribly - obviously */
-+	int len = 1;
-+	char *buf, *fname;
-+
-+	if (!(buf = kzalloc(PAGE_SIZE, GFP_KERNEL)))
-+		return len;
-+	fname = d_path(&f->f_path, buf, PAGE_SIZE);
-+	if (!IS_ERR (fname))
-+		len += strlen (fname);
-+	kfree(buf);
-+	if (len >= 65536)
-+		len = 65535;
-+	return len;
-+}
-+
-+void ftrace_assign_file (char *dest, int dest_len, const struct file *f)
-+{
-+	char *buf, *fname;
-+
-+	dest[0] = '\0';
-+	if (!(buf = kzalloc(PAGE_SIZE, GFP_KERNEL)))
-+		return;
-+
-+	/* it would be nicer to write this directly into the
-+	 * allocated buffer, but d_path doesn't like that */
-+	fname = d_path(&f->f_path, buf, PAGE_SIZE);
-+	if (!IS_ERR (fname))
-+		strncpy (dest, fname, dest_len);
-+	kfree(buf);
-+}
-+
- #ifdef CONFIG_MODULES
- 
- static void trace_destroy_fields(struct ftrace_event_call *call)
