@@ -30,7 +30,7 @@ index 077a075..757262a 100644
  #include <linux/pipe_fs_i.h>
  #include <trace/fs.h>
  
-+#include <trace/events/fs.h>
++#include <trace/events/fs-open.h>
 +
  #include <asm/uaccess.h>
  #include <asm/mmu_context.h>
@@ -62,7 +62,7 @@ index 2d5b513..d6065eb 100644
  DEFINE_TRACE(fs_close);
  
 +#define CREATE_TRACE_POINTS
-+#include <trace/events/fs.h>
++#include <trace/events/fs-open.h>
 +
  int vfs_statfs(struct dentry *dentry, struct kstatfs *buf)
  {
@@ -211,17 +211,17 @@ index d128f65..a733c58 100644
  #ifdef CONFIG_MODULES
  
  static void trace_destroy_fields(struct ftrace_event_call *call)
-diff --git a/dev/null b/include/trace/events/fs.h
+diff --git a/dev/null b/include/trace/events/fs-open.h
 new file mode 100644
 index 0000000..b1aa653
 --- /dev/null
-+++ b/include/trace/events/fs.h
++++ b/include/trace/events/fs-open.h
 @@ -0,0 +1,66 @@
 +#undef TRACE_SYSTEM
-+#define TRACE_SYSTEM fs
++#define TRACE_SYSTEM fs-open
 +
-+#if !defined(_TRACE_FS_H) || defined(TRACE_HEADER_MULTI_READ)
-+#define _TRACE_FS_H
++#if !defined(_TRACE_FS_OPEN_H) || defined(TRACE_HEADER_MULTI_READ)
++#define _TRACE_FS_OPEN_H
 +
 +#include <linux/fs.h>
 +#include <linux/tracepoint.h>
@@ -279,7 +279,7 @@ index 0000000..b1aa653
 +	TP_printk("\"%s\"", __get_str(filename))
 +);
 +
-+#endif /* _TRACE_FS_H */
++#endif /* _TRACE_FS_OPEN_H */
 +
 +/* This part must be outside protection */
 +#include <trace/define_trace.h>

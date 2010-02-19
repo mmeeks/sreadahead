@@ -716,6 +716,21 @@ static void trace_fprintf (const char *fname, const char *value)
 	fclose(file);
 }
 
+static void trace_events_fprintf (const char *event, const char *value)
+{
+	char path[PATH_MAX];
+	strcpy (path, "tracing/events/fs");
+
+	/* renamed to not overlap with ltte pieces */
+	if (access (path, R_OK))
+		strcpy (path, "tracing/events/fs-open");
+
+	strcat (path, "/");
+	strcat (path, event);
+	strcat (path, "/enable");
+	trace_fprintf (path, value);
+}
+
 static void trace_start(void)
 {
 	int ret;
@@ -734,10 +749,10 @@ static void trace_start(void)
 	}
 
 	chdir(DEBUGFS_MNT);
-
-	trace_fprintf ("tracing/events/fs/uselib/enable", "1");
-	trace_fprintf ("tracing/events/fs/open_exec/enable", "1");
-	trace_fprintf ("tracing/events/fs/do_sys_open/enable", "1");
+	
+	trace_events_fprintf ("uselib", "1");
+	trace_events_fprintf ("open_exec", "1");
+	trace_events_fprintf ("do_sys_open", "1");
 	trace_fprintf ("tracing/tracing_enabled", "1");
 
 	file = fopen("tracing/tracing_enabled", "r");
@@ -887,9 +902,9 @@ static void trace_stop(void)
 
 	/* stop tracing */
 	trace_fprintf ("tracing/tracing_enabled", "0");
-	trace_fprintf ("tracing/events/fs/do_sys_open/enable", "0");
-	trace_fprintf ("tracing/events/fs/open_exec/enable", "0");
-	trace_fprintf ("tracing/events/fs/uselib/enable", "0");
+	trace_events_fprintf ("do_sys_open", "0");
+	trace_events_fprintf ("open_exec", "0");
+	trace_events_fprintf ("uselib", "0");
 
 	exit_debugfs();
 
